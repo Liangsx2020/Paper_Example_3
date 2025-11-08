@@ -62,7 +62,8 @@ alpha_2 = 1.0
 alpha_3 = 1.0
 radii = [r1, r2, r3]
 alpha_list = [alpha_1, alpha_2, alpha_3]
-PROJECTION_EPS = 1e-12
+# PROJECTION_EPS = 1e-12
+solution_scale = 0.2  # scale analytic solution to keep u within ~[0, 5]
 
 
 def level_set(x, y, cx, cy, radius):
@@ -82,7 +83,7 @@ def L3(x, y):
 
 
 def combined_L(x, y):
-    return L1(x, y) * L2(x, y) * L3(x, y)
+    return solution_scale * L1(x, y) * L2(x, y) * L3(x, y)
 
 
 def _compute_jump_constants(samples=720):
@@ -316,7 +317,7 @@ def loss(model, X_inner, weights, Rf_inner, X_bd, U_bd, X_interface, Normal_inte
     boundary_rhs = torch.mean(U_bd * bd_pred)
 
     # Nitsche penalty parameter
-    eta = 2000.0
+    eta = 50000.0
 
     # boundart gradient
     X_bd.requires_grad = True
@@ -436,7 +437,7 @@ def loss(model, X_inner, weights, Rf_inner, X_bd, U_bd, X_interface, Normal_inte
     return total_loss
 
 # Number of grid points per quadrant
-quarant_number_one_side = 24 # 16, 24, 32, 48, 64
+quarant_number_one_side = 128 # 16, 24, 32, 48, 64
 
 N_inner_quadrant = 1 
 # number of grid points
@@ -499,7 +500,7 @@ X_bd = np.vstack([xx1, xx2, xx3, xx4])
 U_bd = exact_u(X_bd[:, 0], X_bd[:, 1], X_bd[:, 2]).reshape(-1, 1)
 
 # Number of points on the interior interface
-N_interface = 8 * N_inner  # Adjust this if necessary
+N_interface = 4 * N_inner  # Adjust this if necessary
 
 def sample_circle_interface(radius, center, n_points):
     theta = np.linspace(0, 2 * np.pi, n_points, endpoint=False)
@@ -827,10 +828,18 @@ plt.close()
 # Error detection
 N_test = 10000
 
-# Generate test points using Latin Hypercube Sampling
-X_inn = 2.0 * lhs(2, N_test) - 1.0
-xx = X_inn[:, 0]
-yy = X_inn[:, 1]
+# Generate test points on a uniform grid
+grid_size = int(np.sqrt(N_test))
+if grid_size ** 2 != N_test:
+    grid_size = int(np.ceil(np.sqrt(N_test)))
+    print(f"Adjusting N_test from {N_test} to {grid_size ** 2} for uniform grid sampling.")
+
+x_lin = np.linspace(-1.0, 1.0, grid_size)
+y_lin = np.linspace(-1.0, 1.0, grid_size)
+xx_mesh, yy_mesh = np.meshgrid(x_lin, y_lin, indexing='xy')
+xx = xx_mesh.flatten()
+yy = yy_mesh.flatten()
+
 zz = sign_x(xx.reshape(-1, 1), yy.reshape(-1, 1))
 u_test = exact_u(xx.reshape(-1, 1), yy.reshape(-1, 1), zz).flatten()
 np.savetxt('results_DeepNitsche/numerical_solution/exact_solution/x_test.txt', xx.reshape(-1, 1), fmt='%.8e')
