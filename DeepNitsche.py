@@ -43,8 +43,8 @@ def sign_x(x, y):
 set_seed(42)
 # beta define
 # (beta_plus, beta_minus)
-beta_plus = 10.0
-beta_minus = 1.0
+beta_plus = 1.0 # Liang
+beta_minus = 10.0
 alpha = 1.0
 r0 = 0.5
 
@@ -436,7 +436,7 @@ def loss(model, X_inner, weights, Rf_inner, X_bd, U_bd, X_interface, Normal_inte
     return total_loss
 
 # Number of grid points per quadrant
-quarant_number_one_side = 64 # 16, 24, 32, 48, 64
+quarant_number_one_side = 24 # 16, 24, 32, 48, 64
 
 N_inner_quadrant = 1 
 # number of grid points
@@ -723,7 +723,7 @@ num_neurons = 40 # 40, 60, 80, 100
 model = Plain(3, num_neurons, 1).to(device)
 
 # Set initial value
-LBFGS_iter = 2000 # 1500, 2000
+LBFGS_iter = 500 # 1500, 2000
 itera = 0
 savedloss = []
 

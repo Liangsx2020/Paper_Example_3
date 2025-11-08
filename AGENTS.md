@@ -1,31 +1,22 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
-- `DeepNitsche.py` 是主实验脚本：定义精确解、采样点、Nitsche 型损失与训练/可视化流程。调整网格密度(`quarant_number_one_side`)、网络宽度(`num_neurons`)与迭代数时，务必同步更新图像或误差输出目录。
-- `utils.py` 存放工具函数（参数计数、L²/H¹ 误差统计等）。它依赖主脚本在全局作用域中构造的张量，调用前请先完成训练并确保相关变量存在。
-- `log_DeepNitsche.py` 通过 `nohup` 后台运行主脚本并把日志写入 `logs/`。默认输出名 `m_64_N_40_eta_2000_k+_10.log`，如修改超参数请更新文件名以避免覆盖。
-- 结果与中间数据写入 `results_DeepNitsche/`（例如 `numerical_solution/pred_solution/`），版本化代码应保留目录结构但忽略体积大的 `.txt` 或图像产物，除非需要对比基准。
+## 项目结构与模块职责
+`DeepNitsche.py` 为核心实验脚本，负责精确解定义、采样网格生成、Nitsche 型损失及训练/可视化流程；调整 `quarant_number_one_side`、`num_neurons` 或迭代数时，请同步更新输出目录命名。`utils.py` 存放辅助函数（参数统计、L²/H¹ 误差等），需在主脚本完成训练并构造相关张量后再调用。长时间任务使用 `log_DeepNitsche.py` 通过 `nohup` 后台运行，并根据超参数重命名日志文件（默认 `logs/m_64_N_40_eta_2000_k+_10.log`）。所有图像与预测结果置于 `results_DeepNitsche/`（如 `results_DeepNitsche/numerical_solution/pred_solution/`），保持目录结构以方便对比。
 
-## Build, Test, and Development Commands
-- `python DeepNitsche.py`：本地直接训练并在 `results_DeepNitsche/` 生成采样图、损失曲线与误差图。
-- `python log_DeepNitsche.py`：后台训练，日志写入 `logs/*.log` 以便长跑任务。
-- 训练完成后，可运行：
-  ```bash
-  python - <<'PY'
-  from utils import complete_error_analysis; complete_error_analysis()
-  PY
-  ```
-  以输出论文格式的 L²/H¹ 绝对与相对误差。
+## 构建、测试与开发命令
+本地训练：`python DeepNitsche.py`，运行结束后在 `results_DeepNitsche/` 自动生成采样图、损失曲线与误差可视化。后台训练：`python log_DeepNitsche.py`，日志写入 `logs/`，适合多小时运行。训练完成后执行
+```bash
+python - <<'PY'
+from utils import complete_error_analysis; complete_error_analysis()
+PY
+```
+即可输出论文格式的 L²/H¹ 绝对与相对误差。
 
-## Coding Style & Naming Conventions
-- 统一采用 Python 3.9+、PEP 8 风格与 4 空格缩进；张量默认 `torch.float64`，不要混入 `float32` 以免损失强制连续条件。
-- 新增函数优先放在 `DeepNitsche.py` 顶部或 `utils.py`，命名使用蛇形（如 `generate_validation_ring`）。绘图/输出路径以 `results_DeepNitsche/<task>` 命名，便于批量对比。
-- 复杂张量操作可配少量行内注释，但保持“解释为什么而非如何”的语气。
+## 编码风格与命名
+统一使用 Python 3.9+、PEP 8、4 空格缩进。张量默认 `torch.float64`，避免混入 `float32` 以维持连续性约束。新增函数采用蛇形命名（如 `generate_validation_ring`），优先放在 `DeepNitsche.py` 顶部或 `utils.py`。输出路径沿用 `results_DeepNitsche/<task>` 模式，便于批量比较不同实验。
 
-## Testing Guidelines
-- 项目未集成自动化测试；贡献者需手动验证训练收敛与误差。最小流程：`python DeepNitsche.py` → 检查终端损失、`results_DeepNitsche/Training_Loss_Comprehensive.png`、`Error_Visualization.png` → 运行 `complete_error_analysis()`。
-- 若修改采样或损失项，请附带新的误差指标（L²、H¹、相对误差）及关键图像，命名格式如 `results_DeepNitsche/<variant>/...`。
+## 测试与验证
+项目暂无自动化测试，需手动确认收敛：1）运行 `python DeepNitsche.py` 并观察终端损失；2）检查 `results_DeepNitsche/Training_Loss_Comprehensive.png` 与 `results_DeepNitsche/Error_Visualization.png`；3）调用 `complete_error_analysis()` 记录最终指标。若改动采样或损失项，请提供最新 L²/H¹ 绝对与相对误差及核心图像，并放入独立子目录（如 `results_DeepNitsche/high_res/`）。
 
-## Commit & Pull Request Guidelines
-- 当前提交历史仅含简短语句（例：`start to construct`）。建议沿用“祈使句 + 范围”模式（如 `refine loss weighting`），首字母小写，≤72 字符。
-- PR 描述需包含：修改动机、核心改动要点、运行的命令及关键输出；若新增图像，请附缩略图或路径引用（例如 ``results_DeepNitsche/Model_3D_Predicted_vs_Exact.png``）。必要时链接相关 Issue，并说明是否影响复现实验或需要重新训练基准模型。
+## 提交与 PR 规范
+提交信息应简短、祈使句、首字母小写（示例：`refine loss weighting`），长度控制在 72 字符内。PR 需说明动机、概述核心改动、列出运行命令及关键输出，并链接相关 Issue。若生成新图像，请给出路径（例如 ``results_DeepNitsche/Model_3D_Predicted_vs_Exact.png``）。最后注明是否影响可复现实验或需重新训练共享模型。
