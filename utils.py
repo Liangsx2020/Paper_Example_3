@@ -20,7 +20,14 @@ def count_parameters(model, requires_grad=True):
         return sum(p.numel() for p in model.parameters() if p.requires_grad)
     return sum(p.numel() for p in model.parameters())
 
-def compute_errors_paper_format():
+def compute_errors_paper_format(model,
+                                X_inner_torch,
+                                X_inner_np,
+                                weights_inner_np,
+                                beta_plus,
+                                beta_minus,
+                                exact_u_fn,
+                                exact_du_fn):
     """
     计算论文格式的L²和H¹离散误差
     """
@@ -48,14 +55,14 @@ def compute_errors_paper_format():
     uy_pred = grad_u_pred[:, 1].cpu().detach().numpy()
     
     # 精确解
-    x_inner = X_inner[:, 0:1]
-    y_inner = X_inner[:, 1:2]
-    z_inner = X_inner[:, 2:3]
-    u_exact = exact_u(x_inner, y_inner, z_inner).flatten()
-    ux_exact, uy_exact = exact_du(x_inner, y_inner, z_inner)
+    x_inner = X_inner_np[:, 0:1]
+    y_inner = X_inner_np[:, 1:2]
+    z_inner = X_inner_np[:, 2:3]
+    u_exact = exact_u_fn(x_inner, y_inner, z_inner).flatten()
+    ux_exact, uy_exact = exact_du_fn(x_inner, y_inner, z_inner)
     
     # 权重 (应该和为4)
-    weights_np = weights_inner.flatten()
+    weights_np = weights_inner_np.flatten()
     
     # L²误差
     u_diff = u_pred - u_exact
@@ -81,23 +88,39 @@ def compute_errors_paper_format():
     
     return L2_error, H1_discrete_error
 
-def complete_error_analysis():
+def complete_error_analysis(model,
+                            X_inner_torch,
+                            X_inner_np,
+                            weights_inner_np,
+                            beta_plus,
+                            beta_minus,
+                            exact_u_fn,
+                            exact_du_fn):
     """
     完整的误差分析，包括绝对和相对误差
     """
     print("=== Complete Error Analysis ===")
     
     # 计算误差
-    L2_abs, H1_abs = compute_errors_paper_format()
+    L2_abs, H1_abs = compute_errors_paper_format(
+        model,
+        X_inner_torch,
+        X_inner_np,
+        weights_inner_np,
+        beta_plus,
+        beta_minus,
+        exact_u_fn,
+        exact_du_fn
+    )
     
     # 计算精确解的范数（用于相对误差）
-    x_inner = X_inner[:, 0:1]
-    y_inner = X_inner[:, 1:2]
-    z_inner = X_inner[:, 2:3]
-    u_exact = exact_u(x_inner, y_inner, z_inner).flatten()
-    ux_exact, uy_exact = exact_du(x_inner, y_inner, z_inner)
+    x_inner = X_inner_np[:, 0:1]
+    y_inner = X_inner_np[:, 1:2]
+    z_inner = X_inner_np[:, 2:3]
+    u_exact = exact_u_fn(x_inner, y_inner, z_inner).flatten()
+    ux_exact, uy_exact = exact_du_fn(x_inner, y_inner, z_inner)
     
-    weights_np = weights_inner.flatten()
+    weights_np = weights_inner_np.flatten()
     
     # 精确解的L²范数
     u_exact_L2_squared = np.dot(weights_np, u_exact**2)

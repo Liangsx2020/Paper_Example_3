@@ -33,8 +33,10 @@ def normal_vector(x, y):
 
 def sign_x(x, y):
     z = np.ones_like(x)
-    dist_squared = x ** 2 + y ** 2
-    z[dist_squared < r0 ** 2] = -1.0
+    level_sets = [L1(x, y), L2(x, y), L3(x, y)]
+    for idx, li in enumerate(level_sets):
+        mask = li < 0
+        z[mask] = -(idx + 1)
     return z
 
 
@@ -46,60 +48,175 @@ beta_minus = 1.0
 alpha = 1.0
 r0 = 0.5
 
+# Three-circle level-set parameters
+r1 = 0.25
+r2 = 0.30
+r3 = 0.20
+circle_centers = [
+    (0.5, 0.5),   # Circle 1
+    (-0.5, 0.5),  # Circle 2
+    (0.5, -0.5),  # Circle 3
+]
+alpha_1 = 1.0
+alpha_2 = 1.0
+alpha_3 = 1.0
+radii = [r1, r2, r3]
+alpha_list = [alpha_1, alpha_2, alpha_3]
+PROJECTION_EPS = 1e-12
+
+
+def level_set(x, y, cx, cy, radius):
+    return (x - cx) ** 2 + (y - cy) ** 2 - radius ** 2
+
+
+def L1(x, y):
+    return level_set(x, y, circle_centers[0][0], circle_centers[0][1], r1)
+
+
+def L2(x, y):
+    return level_set(x, y, circle_centers[1][0], circle_centers[1][1], r2)
+
+
+def L3(x, y):
+    return level_set(x, y, circle_centers[2][0], circle_centers[2][1], r3)
+
+
+def combined_L(x, y):
+    return L1(x, y) * L2(x, y) * L3(x, y)
+
+
+def _compute_jump_constants(samples=720):
+    constants = []
+    theta = torch.linspace(0.0, 2.0 * np.pi, samples, device=device, dtype=torch.float64)
+    for idx in range(3):
+        radius = radii[idx]
+        cx, cy = circle_centers[idx]
+        x_curve = cx + radius * torch.cos(theta)
+        y_curve = cy + radius * torch.sin(theta)
+        x_curve = x_curve.clone().detach().requires_grad_(True)
+        y_curve = y_curve.clone().detach().requires_grad_(True)
+        L_val = combined_L(x_curve, y_curve)
+        gradLx = torch.autograd.grad(
+            L_val, x_curve,
+            grad_outputs=torch.ones_like(L_val),
+            create_graph=True,
+            retain_graph=True
+        )[0]
+        gradLy = torch.autograd.grad(
+            L_val, y_curve,
+            grad_outputs=torch.ones_like(L_val),
+            create_graph=True,
+            retain_graph=True
+        )[0]
+        nx = (x_curve - cx) / radius
+        ny = (y_curve - cy) / radius
+        normal_dot = gradLx * nx + gradLy * ny
+        constants.append(alpha_list[idx] * normal_dot.mean().item())
+        x_curve.detach_()
+        y_curve.detach_()
+    return constants
+
+
+jump_constants = None
+
+
+def _exact_u_torch(x, y):
+    L_total = combined_L(x, y)
+    level_sets = [L1(x, y), L2(x, y), L3(x, y)]
+    u_val = L_total
+
+    for idx, li in enumerate(level_sets):
+        mask = li < 0
+        if torch.any(mask):
+            jump = torch.tensor(jump_constants[idx], dtype=x.dtype, device=x.device)
+            u_val = torch.where(mask, L_total - jump, u_val)
+
+    return u_val
+
 
 def exact_u(x, y, z):
-    r_squared = x ** 2 + y ** 2
-    u_plus = r_squared / (2.0 * beta_plus)
-    u_minus = r_squared / (2.0 * beta_minus) - r0 ** alpha + (1 / beta_plus - 1 / beta_minus) * r0 ** 2 / 2
-    eu = u_plus * (1.0 + z) / 2.0 + u_minus * (1.0 - z) / 2.0
-    return eu
+    x_tensor = torch.as_tensor(x, dtype=torch.float64, device=device)
+    y_tensor = torch.as_tensor(y, dtype=torch.float64, device=device)
+    u_tensor = _exact_u_torch(x_tensor, y_tensor)
+    return u_tensor.detach().cpu().numpy()
 
 # the gradient of the exact_u
 def exact_du(x, y, z):
-    ux_plus, uy_plus = x, y
-    ux_minus, uy_minus = x, y
-    dux = ux_plus * (1.0 + z) / 2.0 + ux_minus * (1.0 - z) / 2.0
-    duy = uy_plus * (1.0 + z) / 2.0 + uy_minus * (1.0 - z) / 2.0
-    return dux, duy
+    x_tensor = torch.as_tensor(x, dtype=torch.float64, device=device).clone().detach().requires_grad_(True)
+    y_tensor = torch.as_tensor(y, dtype=torch.float64, device=device).clone().detach().requires_grad_(True)
+    u_tensor = _exact_u_torch(x_tensor, y_tensor)
+    grad_outputs = torch.ones_like(u_tensor, dtype=torch.float64, device=device)
+    dux, duy = torch.autograd.grad(
+        u_tensor,
+        (x_tensor, y_tensor),
+        grad_outputs=grad_outputs,
+        retain_graph=False,
+        create_graph=False
+    )
+    return dux.detach().cpu().numpy(), duy.detach().cpu().numpy()
 
-# V define. [u] =u_plus - u_minus  = v
+# V define. [u] jump across interfaces
 def V(x_interface, y_interface):
-    '''
-    [u] = u_minus - u_plus
-    '''
-    r_squared = x_interface ** 2 + y_interface ** 2
-    
-    # 在界面上的精确解值
-    u_plus = r_squared / (2.0 * beta_plus)
-    u_minus = r_squared / (2.0 * beta_minus) - r0 ** alpha + (1 / beta_plus - 1 / beta_minus) * r0 ** 2 / 2
-    
-    # 跳跃值
-    jump = u_minus - u_plus
-    return jump
+    x_tensor = torch.as_tensor(x_interface, dtype=torch.float64, device=device)
+    y_tensor = torch.as_tensor(y_interface, dtype=torch.float64, device=device)
+
+    level_values = torch.stack([
+        torch.abs(L1(x_tensor, y_tensor)),
+        torch.abs(L2(x_tensor, y_tensor)),
+        torch.abs(L3(x_tensor, y_tensor))
+    ], dim=0)
+
+    closest_idx = torch.argmin(level_values, dim=0)
+    jump_tensor = torch.zeros_like(x_tensor)
+
+    for idx in range(3):
+        mask = (closest_idx == idx)
+        if torch.any(mask):
+            jump_tensor[mask] = jump_constants[idx]
+
+    return jump_tensor.detach().cpu().numpy()
+
 
 def W(x_interface, y_interface):
-    '''
-    通用W函数：基于精确解计算法向通量跳跃值
-    [β∇u·n] = β_minus*(∂u_minus/∂n) - β_plus*(∂u_plus/∂n)
-    '''
-    # 对于精确解 u = r²/(2β)，在圆形界面上：
-    # ∂u/∂n = ∇u·n = (x/β)(x/r0) + (y/β)(y/r0) = r0/β
-    
-    dudn_plus = r0 / beta_plus
-    dudn_minus = r0 / beta_minus
-    
-    # 法向通量跳跃
-    flux_jump = beta_minus * dudn_minus - beta_plus * dudn_plus
-    
-    return np.full_like(x_interface, flux_jump)
+    """
+    三个界面的法向通量跳跃为零
+    """
+    return np.zeros_like(x_interface)
+
+
+def laplacian_L(x, y):
+    x_tensor = torch.as_tensor(x, dtype=torch.float64, device=device).clone().detach().requires_grad_(True)
+    y_tensor = torch.as_tensor(y, dtype=torch.float64, device=device).clone().detach().requires_grad_(True)
+    L_val = combined_L(x_tensor, y_tensor)
+    gradLx = torch.autograd.grad(
+        L_val, x_tensor,
+        grad_outputs=torch.ones_like(L_val),
+        create_graph=True,
+        retain_graph=True
+    )[0]
+    gradLy = torch.autograd.grad(
+        L_val, y_tensor,
+        grad_outputs=torch.ones_like(L_val),
+        create_graph=True,
+        retain_graph=True
+    )[0]
+    d2x = torch.autograd.grad(
+        gradLx, x_tensor,
+        grad_outputs=torch.ones_like(gradLx),
+        retain_graph=True
+    )[0]
+    d2y = torch.autograd.grad(
+        gradLy, y_tensor,
+        grad_outputs=torch.ones_like(gradLy),
+        retain_graph=True
+    )[0]
+    lap = d2x + d2y
+    return lap.detach().cpu().numpy()
 
 
 def rF(x, y, z):
-    # # for u = r²/2， Δu = 2，so -Δu = -2
-    f_plus = -2.0 + x * 0 + y * 0
-    f_minus = -2.0 + x * 0 + y * 0
-    rf = f_plus * (1.0 + z) / 2.0 + f_minus * (1.0 - z) / 2.0
-    return rf
+    lap = laplacian_L(x, y)
+    return -lap
 
 # the computation of boundary normal vector
 def compute_boundary_normal(X_bd, x_range=(-1, 1), y_range=(-1, 1), tol=1e-6):
@@ -124,6 +241,7 @@ def compute_boundary_normal(X_bd, x_range=(-1, 1), y_range=(-1, 1), tol=1e-6):
 
 
 device = torch.device("cpu")
+jump_constants = _compute_jump_constants()
 
 # Define model
 class Plain(nn.Module):
@@ -192,7 +310,7 @@ def gauss_nodes_1d(n):
 
 
 # Loss function
-def loss(model, X_inner, weights, Rf_inner, X_bd, U_bd, X_interface, Normal_interface, Jump, Jump_normal, N_inner):
+def loss(model, X_inner, weights, Rf_inner, X_bd, U_bd, X_interface, Normal_interface, Jump, Jump_normal, Interface_labels, Interface_ds, N_inner):
     # boundary prediction
     bd_pred = model(X_bd)
     boundary_rhs = torch.mean(U_bd * bd_pred)
@@ -234,8 +352,13 @@ def loss(model, X_inner, weights, Rf_inner, X_bd, U_bd, X_interface, Normal_inte
     normal_x = Normal_interface[:, 0:1]
     normal_y = Normal_interface[:, 1:2]
     # ensure the gradient of the interface is true
-    interface_outer = torch.cat([X_interface[:, 0:2], torch.ones(X_interface.shape[0], 1, device=X_interface.device, requires_grad=True)], dim=1)
-    interface_inner = torch.cat([X_interface[:, 0:2], -torch.ones(X_interface.shape[0], 1, device=X_interface.device, requires_grad=True)], dim=1)
+    interface_outer = torch.cat([
+        X_interface[:, 0:2],
+        torch.ones(X_interface.shape[0], 1, device=X_interface.device, dtype=X_interface.dtype, requires_grad=True)
+    ], dim=1)
+    interface_inner = torch.cat([X_interface[:, 0:2], Interface_labels], dim=1)
+    interface_outer.requires_grad_(True)
+    interface_inner.requires_grad_(True)
 
     u_interface_outer = model(interface_outer)
     u_interface_inner = model(interface_inner)
@@ -273,12 +396,8 @@ def loss(model, X_inner, weights, Rf_inner, X_bd, U_bd, X_interface, Normal_inte
 
     jump_pred = u_interface_inner - u_interface_outer  # [u] = u⁻ - u⁺
     
-    N_interface_points = X_interface.shape[0]
-    interface_length = 2 * np.pi * r0
-    ds = interface_length / N_interface_points
     gamma = 1.0 
-    line_integral = gamma / alpha * torch.sum(jump_pred ** 2) * ds # interface_jump
-    # line_integral = gamma / alpha * torch.sum(jump_pred ** 2) * ds # interface_jump
+    line_integral = gamma / alpha * torch.sum((jump_pred.squeeze()) ** 2 * Interface_ds.squeeze())
 
     
 
@@ -382,24 +501,53 @@ U_bd = exact_u(X_bd[:, 0], X_bd[:, 1], X_bd[:, 2]).reshape(-1, 1)
 # Number of points on the interior interface
 N_interface = 8 * N_inner  # Adjust this if necessary
 
-# Generate evenly spaced angles between 0 and 2π
-theta = np.linspace(0, 2 * np.pi, N_interface, endpoint=False)
-# 
+def sample_circle_interface(radius, center, n_points):
+    theta = np.linspace(0, 2 * np.pi, n_points, endpoint=False)
+    x = center[0] + radius * np.cos(theta)
+    y = center[1] + radius * np.sin(theta)
+    normals = normal_vector(x, y)
+    jumps = V(x, y)
+    jump_normals = W(x, y)
+    arc_length = 2 * np.pi * radius
+    return x, y, normals, jumps, jump_normals, arc_length
 
-# Calculate (x, y) coordinates of the points on the circle of radius 0.5
-x_interface = r0 * np.cos(theta) 
-y_interface = r0 * np.sin(theta) 
-# Stack the coordinates to form the interface points
-X_interface = np.vstack((x_interface, y_interface)).T 
 
-# normal vector
-Normal_interface = normal_vector(x_interface, y_interface) 
+points_per_circle = np.full(3, N_interface // 3, dtype=int)
+points_per_circle[:N_interface % 3] += 1
 
-## Jump: function jump on the interior interface, totally 4*N_inner points
-Jump = V(x_interface, y_interface) # (64,)
+interface_data = []
+total_arc_length = 0.0
+interface_labels = []
+interface_ds = []
 
-# Jump_normal: normal jump on the interior interface
-Jump_normal = W(x_interface, y_interface) # (64,)
+for idx in range(3):
+    x, y, normals, jumps, jump_normals, arc_length = sample_circle_interface(
+        radii[idx],
+        circle_centers[idx],
+        points_per_circle[idx]
+    )
+    total_arc_length += arc_length
+    interface_data.append({
+        "x": x,
+        "y": y,
+        "normals": normals,
+        "jump": jumps,
+        "jump_normal": jump_normals,
+        "arc_length": arc_length,
+        "ds": arc_length / points_per_circle[idx]
+    })
+    interface_labels.append(np.full(points_per_circle[idx], -(idx + 1.0)))
+    interface_ds.append(np.full(points_per_circle[idx], arc_length / points_per_circle[idx]))
+
+x_interface = np.concatenate([data["x"] for data in interface_data])
+y_interface = np.concatenate([data["y"] for data in interface_data])
+X_interface = np.vstack((x_interface, y_interface)).T
+
+Normal_interface = np.vstack([data["normals"] for data in interface_data])
+Jump = np.concatenate([data["jump"] for data in interface_data])
+Jump_normal = np.concatenate([data["jump_normal"] for data in interface_data])
+interface_labels = np.concatenate(interface_labels)
+interface_ds = np.concatenate(interface_ds)
 
 # Switch variables to torch
 X_bd_torch = torch.tensor(X_bd, requires_grad=True, device=device, dtype=torch.float64)
@@ -411,6 +559,8 @@ X_interface_torch = torch.tensor(X_interface, requires_grad=True, device=device,
 Normal_interface_torch = torch.tensor(Normal_interface, device=device, dtype=torch.float64)
 Jump_torch = torch.tensor(Jump, device=device, dtype=torch.float64)
 Jump_normal_torch = torch.tensor(Jump_normal, device=device, dtype=torch.float64)
+Interface_labels_torch = torch.tensor(interface_labels, device=device, dtype=torch.float64).unsqueeze(1)
+Interface_ds_torch = torch.tensor(interface_ds, device=device, dtype=torch.float64).unsqueeze(1)
 
 # Training points plot
 plt.figure(figsize=(5, 5))
@@ -421,6 +571,10 @@ plt.scatter(X_bd[:, 0], X_bd[:, 1],
             c="r", s=5, marker=".")
 plt.scatter(X_interface[:, 0], X_interface[:, 1],
             c="k", s=5, marker="o")
+for idx, radius in enumerate(radii):
+    theta = np.linspace(0, 2 * np.pi, 200)
+    cx, cy = circle_centers[idx]
+    plt.plot(cx + radius * np.cos(theta), cy + radius * np.sin(theta), linestyle="--", linewidth=1.0)
 plt.xlabel('x')
 plt.ylabel('y')
 plt.axis('equal')
@@ -439,49 +593,66 @@ X_valid_inner_random = X_inner[valid_indices, :]
 weights_valid_inner_random = weights_inner[valid_indices]
 Rf_valid_inner_random = Rf_inner[valid_indices]
 
-# 2. Structured validation points near the interface
+# 2. Structured validation points near each interface
 np.random.seed(123)  # Ensure reproducibility
-theta_valid = np.linspace(0, 2 * np.pi, N_valid_interface, endpoint=False)
+points_per_circle_valid = np.full(3, max(1, N_valid_interface // 3), dtype=int)
+points_per_circle_valid[:N_valid_interface % 3] += 1
 
-# Inner circle validation points (r = 0.3 to 0.48)
-r_valid_inner = np.random.uniform(0.3, 0.48, N_valid_interface)
-x_valid_inner = r_valid_inner * np.cos(theta_valid)
-y_valid_inner = r_valid_inner * np.sin(theta_valid)
-z_valid_inner = sign_x(x_valid_inner.reshape(-1, 1), y_valid_inner.reshape(-1, 1))
-X_valid_interface_inner = np.column_stack([x_valid_inner, y_valid_inner, z_valid_inner.flatten()])
+inner_points = []
+outer_points = []
 
-# Outer ring verification point (r = 0.52 to 0.7)  
-r_valid_outer = np.random.uniform(0.52, 0.7, N_valid_interface)
-x_valid_outer = r_valid_outer * np.cos(theta_valid)
-y_valid_outer = r_valid_outer * np.sin(theta_valid)
-z_valid_outer = sign_x(x_valid_outer.reshape(-1, 1), y_valid_outer.reshape(-1, 1))
-X_valid_interface_outer = np.column_stack([x_valid_outer, y_valid_outer, z_valid_outer.flatten()])
+for idx in range(3):
+    n_pts = points_per_circle_valid[idx]
+    theta_valid = np.linspace(0, 2 * np.pi, n_pts, endpoint=False)
+    # inner ring: slightly inside each circle
+    r_inner = np.random.uniform(0.85 * radii[idx], 0.98 * radii[idx], n_pts)
+    # outer ring: slightly outside each circle
+    r_outer = np.random.uniform(1.02 * radii[idx], 1.25 * radii[idx], n_pts)
+    cx, cy = circle_centers[idx]
+
+    x_inner = cx + r_inner * np.cos(theta_valid)
+    y_inner = cy + r_inner * np.sin(theta_valid)
+    z_inner = sign_x(x_inner.reshape(-1, 1), y_inner.reshape(-1, 1))
+    inner_points.append(np.column_stack([x_inner, y_inner, z_inner.flatten()]))
+
+    x_outer = cx + r_outer * np.cos(theta_valid)
+    y_outer = cy + r_outer * np.sin(theta_valid)
+    z_outer = sign_x(x_outer.reshape(-1, 1), y_outer.reshape(-1, 1))
+    outer_points.append(np.column_stack([x_outer, y_outer, z_outer.flatten()]))
+
+if inner_points:
+    X_valid_interface_inner = np.vstack(inner_points)
+    X_valid_interface_outer = np.vstack(outer_points)
+else:
+    X_valid_interface_inner = np.empty((0, 3))
+    X_valid_interface_outer = np.empty((0, 3))
 
 # 3. Combine all validation points
 X_valid_inner_combined = np.vstack([
-    X_valid_inner_random, 
-    X_valid_interface_inner, 
+    X_valid_inner_random,
+    X_valid_interface_inner,
     X_valid_interface_outer
 ])
 
 # Compute weights and source terms for interface validation points
-# Inner circle weights
-weights_interface_inner = np.ones(N_valid_interface) * (4.0 / (2 * N_valid_interface))
-x_inner = X_valid_interface_inner[:, 0:1]
-y_inner = X_valid_interface_inner[:, 1:2] 
-z_inner = X_valid_interface_inner[:, 2:3]
-Rf_interface_inner = rF(x_inner, y_inner, z_inner)
+num_inner = X_valid_interface_inner.shape[0]
+num_outer = X_valid_interface_outer.shape[0]
 
-# Outer ring weights
-weights_interface_outer = np.ones(N_valid_interface) * (4.0 / (2 * N_valid_interface))
-x_outer = X_valid_interface_outer[:, 0:1]
-y_outer = X_valid_interface_outer[:, 1:2] 
-z_outer = X_valid_interface_outer[:, 2:3]
-Rf_interface_outer = rF(x_outer, y_outer, z_outer)
+weights_interface_inner = np.ones(num_inner) * (4.0 / (2 * max(1, num_inner)))
+x_inner = X_valid_interface_inner[:, 0:1] if num_inner > 0 else np.empty((0, 1))
+y_inner = X_valid_interface_inner[:, 1:2] if num_inner > 0 else np.empty((0, 1))
+z_inner = X_valid_interface_inner[:, 2:3] if num_inner > 0 else np.empty((0, 1))
+Rf_interface_inner = rF(x_inner, y_inner, z_inner) if num_inner > 0 else np.empty((0, 1))
+
+weights_interface_outer = np.ones(num_outer) * (4.0 / (2 * max(1, num_outer)))
+x_outer = X_valid_interface_outer[:, 0:1] if num_outer > 0 else np.empty((0, 1))
+y_outer = X_valid_interface_outer[:, 1:2] if num_outer > 0 else np.empty((0, 1))
+z_outer = X_valid_interface_outer[:, 2:3] if num_outer > 0 else np.empty((0, 1))
+Rf_interface_outer = rF(x_outer, y_outer, z_outer) if num_outer > 0 else np.empty((0, 1))
 
 # Combine weights and source terms
 weights_valid_inner_combined = np.hstack([
-    weights_valid_inner_random, 
+    weights_valid_inner_random,
     weights_interface_inner,
     weights_interface_outer
 ])
@@ -505,6 +676,10 @@ plt.subplot(1, 2, 1)
 plt.scatter(X_inner[:, 0], X_inner[:, 1], c="lightblue", s=0.5, marker=".", alpha=0.6, label="Inner training")
 plt.scatter(X_bd[:, 0], X_bd[:, 1], c="red", s=3, marker=".", label="Boundary")
 plt.scatter(X_interface[:, 0], X_interface[:, 1], c="black", s=3, marker="o", label="Interface")
+theta_ref = np.linspace(0, 2 * np.pi, 200)
+for idx, radius in enumerate(radii):
+    cx, cy = circle_centers[idx]
+    plt.plot(cx + radius * np.cos(theta_ref), cy + radius * np.sin(theta_ref), 'k--', linewidth=1.0, alpha=0.7)
 plt.xlabel('x')
 plt.ylabel('y')
 plt.axis('equal')
@@ -517,14 +692,18 @@ plt.subplot(1, 2, 2)
 plt.scatter(X_valid_inner_random[:, 0], X_valid_inner_random[:, 1], 
            c="blue", s=8, marker=".", alpha=0.7, label="Random inner")
 # Interface inner circle verification point
-plt.scatter(X_valid_interface_inner[:, 0], X_valid_interface_inner[:, 1], 
-           c="orange", s=15, marker="^", alpha=0.8, label="Interface inner")
+if X_valid_interface_inner.size > 0:
+    plt.scatter(X_valid_interface_inner[:, 0], X_valid_interface_inner[:, 1], 
+               c="orange", s=15, marker="^", alpha=0.8, label="Interface inner")
 # Interface outer ring verification point
-plt.scatter(X_valid_interface_outer[:, 0], X_valid_interface_outer[:, 1], 
-           c="red", s=15, marker="s", alpha=0.8, label="Interface outer")
+if X_valid_interface_outer.size > 0:
+    plt.scatter(X_valid_interface_outer[:, 0], X_valid_interface_outer[:, 1], 
+               c="red", s=15, marker="s", alpha=0.8, label="Interface outer")
 # Draw the interface circles as a reference
-theta_ref = np.linspace(0, 2*np.pi, 100)
-plt.plot(r0 * np.cos(theta_ref), r0 * np.sin(theta_ref), 'k--', linewidth=2, alpha=0.5, label=f"Interface (r={r0})")
+theta_ref = np.linspace(0, 2*np.pi, 200)
+for idx, radius in enumerate(radii):
+    cx, cy = circle_centers[idx]
+    plt.plot(cx + radius * np.cos(theta_ref), cy + radius * np.sin(theta_ref), 'k--', linewidth=1.5, alpha=0.7)
 
 plt.xlabel('x')
 plt.ylabel('y')
@@ -566,7 +745,7 @@ def closure():
     optimizerLBFGS.zero_grad()
     
 
-    lossLBFGS = loss(model, X_inner_torch, weights_inner_torch, Rf_inner_torch, X_bd_torch, U_bd_torch, X_interface_torch, Normal_interface_torch, Jump_torch, Jump_normal_torch, N_inner)
+    lossLBFGS = loss(model, X_inner_torch, weights_inner_torch, Rf_inner_torch, X_bd_torch, U_bd_torch, X_interface_torch, Normal_interface_torch, Jump_torch, Jump_normal_torch, Interface_labels_torch, Interface_ds_torch, N_inner)
     # lossLBFGS_valid = loss(model, X_valid_inner_torch, weights_valid_inner_torch, Rf_valid_inner_torch, X_bd_torch,
     #                       U_bd_torch,
     #                       X_interface_torch, Normal_interface_torch, Jump_torch, Jump_normal_torch, N_inner)
@@ -600,7 +779,16 @@ print(f"Final loss: {savedloss[-1]:.5e}")
 
 # L2 and H1 error analysis
 model.eval()
-# error_results = complete_error_analysis() 
+# error_results = complete_error_analysis(
+#     model,
+#     X_inner_torch,
+#     X_inner,
+#     weights_inner,
+#     beta_plus,
+#     beta_minus,
+#     exact_u,
+#     exact_du
+# ) 
 
 
 # Plot the training and validation loss (improved visualization)
@@ -775,10 +963,12 @@ ax2.set_title('Absolute Error (2D)')
 ax2.axis('equal')
 
 # Mark the interface on the 2D plot
-theta_circle = np.linspace(0, 2*np.pi, 100)
-x_circle = r0 * np.cos(theta_circle)
-y_circle = r0 * np.sin(theta_circle)
-ax2.plot(x_circle, y_circle, 'k--', linewidth=2, label='Interface')
+theta_circle = np.linspace(0, 2*np.pi, 200)
+for idx, radius in enumerate(radii):
+    cx, cy = circle_centers[idx]
+    x_circle = cx + radius * np.cos(theta_circle)
+    y_circle = cy + radius * np.sin(theta_circle)
+    ax2.plot(x_circle, y_circle, 'k--', linewidth=2, label=f'Interface {idx+1}')
 ax2.legend()
 plt.tight_layout()
 plt.savefig('results_DeepNitsche/Error_Visualization.png', dpi=300)
