@@ -437,7 +437,7 @@ def loss(model, X_inner, weights, Rf_inner, X_bd, U_bd, X_interface, Normal_inte
     return total_loss
 
 # Number of grid points per quadrant
-quarant_number_one_side = 128 # 16, 24, 32, 48, 64
+quarant_number_one_side = 256 # 16, 24, 32, 48, 64
 
 N_inner_quadrant = 1 
 # number of grid points
@@ -500,7 +500,7 @@ X_bd = np.vstack([xx1, xx2, xx3, xx4])
 U_bd = exact_u(X_bd[:, 0], X_bd[:, 1], X_bd[:, 2]).reshape(-1, 1)
 
 # Number of points on the interior interface
-N_interface = 4 * N_inner  # Adjust this if necessary
+N_interface = N_inner  # Adjust this if necessary
 
 def sample_circle_interface(radius, center, n_points):
     theta = np.linspace(0, 2 * np.pi, n_points, endpoint=False)
